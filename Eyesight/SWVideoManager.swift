@@ -16,6 +16,7 @@ extension NSNotification.Name {
     static let SWVideoManagerStopSession = Notification.Name(rawValue: "SWVideoManagerStopSession")
     static let SWVideoManagerStartRecording = Notification.Name(rawValue: "SWVideoManagerStartRecording")
     static let SWVideoManagerStopRecording = Notification.Name(rawValue: "SWVideoManagerStopRecording")
+    static let SWVideoManagerStartFilterMovie = Notification.Name(rawValue: "SWVideoManagerStartFilterMovie")
     static let SWVideoManagerStartExport = Notification.Name(rawValue: "SWVideoManagerStartExport")
     static let SWVideoManagerStopExport = Notification.Name(rawValue: "SWVideoManagerStopExport")
 }
@@ -103,6 +104,104 @@ class SWVideoManager: NSObject, AVCaptureFileOutputRecordingDelegate {
         SWFilterItem(.Earlybird, title:"Earlybird"),
         SWFilterItem(.LordKelvin, title:"LordKelvin"),
     ]
+    
+    var selectedFilter : BasicOperation = SaturationAdjustment() {
+        didSet {
+            oldValue.removeAllTargets()
+            if let filterMovie = filterMovie {
+                filterMovie.removeAllTargets()
+                filterMovie --> selectedFilter
+            }
+        }
+    }
+    
+    var selectedFilterType : SWFilterType = SWFilterType.None {
+        didSet {
+            selectedFilter = SWFilterItem.createFilter(selectedFilterType)
+        }
+    }
+    
+    var filterMovieURL :URL?
+    
+    func filterMovieAsset() -> AVURLAsset? {
+        if let url = filterMovieURL {
+            let inputOptions = [AVURLAssetPreferPreciseDurationAndTimingKey:NSNumber(value:true)]
+            return AVURLAsset(url:url, options:inputOptions)
+        }
+        
+        return nil
+    }
+    
+    var filterMovie : MovieInput! {
+        didSet {
+            if let movie = oldValue {
+                movie.removeAllTargets()
+            }
+            guard
+                let movie = filterMovie
+                else { return }
+            movie --> selectedFilter
+        }
+    }
+
+    func stopFilterMovie() {
+        NSObject.cancelPreviousPerformRequests(withTarget: self,
+                                               selector: #selector(self.runFilterMovie),
+                                               object: nil)
+        if let filterMovie = filterMovie {
+            filterMovie.cancel()
+            self.filterMovie = nil
+        }
+    }
+    
+    @objc func runFilterMovie() {
+        self.stopFilterMovie()
+        do {
+            guard
+                let url = self.filterMovieURL,
+                let inputAsset = self.filterMovieAsset()
+            else { return }
+            filterMovie = try MovieInput(url:url, playAtActualSpeed:true, loop:false)
+            filterMovie.runBenchmark = true
+            filterMovie.start()
+            NotificationCenter.default.post(Notification(name: .SWVideoManagerStartFilterMovie, object: self, userInfo: ["filterMovie": filterMovie, "inputAsset": inputAsset]))
+            let duration = TimeInterval(inputAsset.duration.seconds+0)
+            self.perform(#selector(self.runFilterMovie), with: nil, afterDelay:duration)
+        } catch {
+            print("Couldn't process movie with error: \(error)")
+        }
+    }
+
+    func makeFilteredMovie() {
+        //filter movie
+        self.stopFilterMovie()
+        self.filterMovie = nil
+        selectedFilter.removeAllTargets()
+        if self.selectedFilterType != .None {
+            do {
+                guard
+                    let inputAsset = self.filterMovieAsset(),
+                    let videoTrack = inputAsset.tracks(withMediaType: .video).first
+                    else { return }
+                let size = videoTrack.naturalSize
+                let movieIn = try MovieInput(asset:inputAsset, playAtActualSpeed:false, loop:false)
+                let movieOut = try MovieOutput(URL:self.filteredVideoURL,
+                                               size:Size(width: Float(size.width), height: Float(size.height)), liveVideo: true)
+                movieIn --> selectedFilter --> movieOut
+                try? FileManager.default.removeItem(at: self.filteredVideoURL)
+                
+                movieOut.startRecording()
+                movieIn.start()
+                movieOut.finishRecording({
+                    self.selectedFilter.removeAllTargets()
+                    movieIn.removeAllTargets()
+                })
+            }
+            catch {
+                print("Couldn't process movie with error: \(error)")
+            }
+        }
+    }
     
     private let player = AVPlayer()
     private var isSessionRunning = false

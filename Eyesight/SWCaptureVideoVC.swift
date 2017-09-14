@@ -90,12 +90,9 @@ class SWCaptureVideoVC: UIViewController {
             }
         }
         else if segue.identifier == "selectFilter" {
-            if let destinationVC = segue.destination as? SWFilterVideoVC {
-                destinationVC.videoURL = self.videoURL
-            }
+            videoManager.filterMovieURL = self.videoURL
         }
     }
-
     
     @IBAction func recButtonUp(_ sender: Any) {
         if (!videoManager.isRecording) {
